@@ -15,6 +15,7 @@ import com.example.fileIO.Codec4;
 import com.example.fileIO.FileReader;
 import com.example.fileIO.FileReaderMultiDir;
 import com.example.fileIO.FileWriter;
+import com.example.fileIO.PartitionedFileOutput;
 import com.example.fileIO.StringCountAggregator;
 
 @ApplicationAnnotation(name="FileIO")
@@ -27,7 +28,8 @@ public class SanExerciseApplication implements StreamingApplication
 	    // create operators                                                                                  
 	    FileReader reader = dag.addOperator("read",  FileReader.class);
 	    StringCountAggregator aggr = dag.addOperator("aggregator", StringCountAggregator.class);
-	    FileWriter writer = dag.addOperator("write", FileWriter.class);
+	    //FileWriter writer = dag.addOperator("write", FileWriter.class);
+	    PartitionedFileOutput writer = dag.addOperator("write", PartitionedFileOutput.class);
 
 	    reader.setScanner(new FileReaderMultiDir.SlicedDirectoryScanner());
 	    

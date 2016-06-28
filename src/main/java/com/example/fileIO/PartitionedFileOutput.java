@@ -1,5 +1,6 @@
 package com.example.fileIO;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -8,7 +9,12 @@ import java.util.Map;
 
 import javax.validation.constraints.Max;
 import javax.validation.constraints.Min;
+import javax.validation.constraints.NotNull;
 
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.LocalFileSystem;
+import org.apache.hadoop.fs.Path;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -29,6 +35,20 @@ public class PartitionedFileOutput extends BaseOperator implements Partitioner<P
 	private transient int id;             // operator/partition id
 	private transient long curWindowId;   // current window id
 	private transient long cnt;           // per-window tuple count
+	
+	  /**
+	   * The path of the directory to where files are written.
+	   */
+	  @NotNull
+	  protected String filePath;
+	  
+	  public PartitionedFileOutput() {
+		  LOG.debug("entering ctor");
+	  }
+
+	public PartitionedFileOutput(String filePath2) {
+		this.filePath = filePath2;
+	}
 
 	public final transient DefaultInputPort<StringCount> input = new DefaultInputPort<StringCount>() {
 		@Override
@@ -38,6 +58,18 @@ public class PartitionedFileOutput extends BaseOperator implements Partitioner<P
 			++cnt;
 		}
 	};
+
+	  /**
+	   * The file system used to write to.
+	   */
+	  protected transient FileSystem fs;
+	  
+	  /**
+	   * The replication level for your output files.
+	   */
+	  @Min(0)
+	  protected int replication = 0;
+
 
 
 	@Override
@@ -58,8 +90,8 @@ public class PartitionedFileOutput extends BaseOperator implements Partitioner<P
 		int mask = 0x01;
 
 		Partition<PartitionedFileOutput>[] newPartitions = new Partition[] {
-				new DefaultPartition<PartitionedFileOutput>(new PartitionedFileOutput()),
-				new DefaultPartition<PartitionedFileOutput>(new PartitionedFileOutput()) };
+				new DefaultPartition<PartitionedFileOutput>(new PartitionedFileOutput(this.filePath)),
+				new DefaultPartition<PartitionedFileOutput>(new PartitionedFileOutput(this.filePath)) };
 
 		HashSet<Integer>[] set
 		= new HashSet[] {new HashSet<>(), new HashSet<>(), new HashSet<>()};
@@ -109,6 +141,23 @@ public class PartitionedFileOutput extends BaseOperator implements Partitioner<P
 
 	}
 
+	  /**
+	   * Override this method to change the FileSystem instance that is used by the operator.
+	   * This method is mainly helpful for unit testing.
+	   * @return A FileSystem object.
+	   * @throws IOException
+	   */
+	  protected FileSystem getFSInstance() throws IOException
+	  {
+	    FileSystem tempFS = FileSystem.newInstance(new Path(filePath).toUri(), new Configuration());
+
+	    if (tempFS instanceof LocalFileSystem) {
+	      tempFS = ((LocalFileSystem)tempFS).getRaw();
+	    }
+
+	    return tempFS;
+	  }
+	
 	@Override
 	public void setup(Context.OperatorContext context)
 	{
@@ -117,6 +166,19 @@ public class PartitionedFileOutput extends BaseOperator implements Partitioner<P
 		long appWindowId = context.getValue(OperatorContext.ACTIVATION_WINDOW_ID);
 		id = context.getId();
 		LOG.debug("Started setup, appWindowId = {}, operator id = {}", appWindowId, id);
+		
+	    //Getting required file system instance.
+	    try {
+	      fs = getFSInstance();
+	    } catch (IOException ex) {
+	      throw new RuntimeException(ex);
+	    }
+
+	    if (replication <= 0) {
+	      replication = fs.getDefaultReplication(new Path(filePath));
+	    }
+
+	    LOG.debug("FS class {}", fs.getClass());
 	}
 
 
@@ -137,5 +199,13 @@ public class PartitionedFileOutput extends BaseOperator implements Partitioner<P
 	// accessors
 	public int getNPartitions() { return nPartitions; }
 	public void setNPartitions(int v) { nPartitions = v; }
+
+	public String getFilePath() {
+		return filePath;
+	}
+
+	public void setFilePath(String filePath) {
+		this.filePath = filePath;
+	}
 
 }
