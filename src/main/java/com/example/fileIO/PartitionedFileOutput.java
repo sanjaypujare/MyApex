@@ -12,9 +12,11 @@ import javax.validation.constraints.Min;
 import javax.validation.constraints.NotNull;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.LocalFileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.permission.FsPermission;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -35,16 +37,16 @@ public class PartitionedFileOutput extends BaseOperator implements Partitioner<P
 	private transient int id;             // operator/partition id
 	private transient long curWindowId;   // current window id
 	private transient long cnt;           // per-window tuple count
-	
-	  /**
-	   * The path of the directory to where files are written.
-	   */
-	  @NotNull
-	  protected String filePath;
-	  
-	  public PartitionedFileOutput() {
-		  LOG.debug("entering ctor");
-	  }
+
+	/**
+	 * The path of the directory to where files are written.
+	 */
+	@NotNull
+	protected String filePath;
+
+	public PartitionedFileOutput() {
+		LOG.debug("entering ctor");
+	}
 
 	public PartitionedFileOutput(String filePath2) {
 		this.filePath = filePath2;
@@ -55,20 +57,29 @@ public class PartitionedFileOutput extends BaseOperator implements Partitioner<P
 		public void process(StringCount tuple)
 		{
 			LOG.debug("{}: tuple = {}, operator id = {}", cnt, tuple, id);
+			try {
+				fsOutput.writeBytes(tuple.toString()+"\n");
+			} catch (IOException e) {
+				LOG.error("writeBytes", e);
+			}
 			++cnt;
 		}
 	};
 
-	  /**
-	   * The file system used to write to.
-	   */
-	  protected transient FileSystem fs;
-	  
-	  /**
-	   * The replication level for your output files.
-	   */
-	  @Min(0)
-	  protected int replication = 0;
+	/**
+	 * The file system used to write to.
+	 */
+	protected transient FileSystem fs;
+
+	/**
+	 * The replication level for your output files.
+	 */
+	@Min(0)
+	protected int replication = 0;
+
+	FSDataOutputStream fsOutput;
+
+	protected final short filePermission = 0777;
 
 
 
@@ -141,23 +152,23 @@ public class PartitionedFileOutput extends BaseOperator implements Partitioner<P
 
 	}
 
-	  /**
-	   * Override this method to change the FileSystem instance that is used by the operator.
-	   * This method is mainly helpful for unit testing.
-	   * @return A FileSystem object.
-	   * @throws IOException
-	   */
-	  protected FileSystem getFSInstance() throws IOException
-	  {
-	    FileSystem tempFS = FileSystem.newInstance(new Path(filePath).toUri(), new Configuration());
+	/**
+	 * Override this method to change the FileSystem instance that is used by the operator.
+	 * This method is mainly helpful for unit testing.
+	 * @return A FileSystem object.
+	 * @throws IOException
+	 */
+	protected FileSystem getFSInstance() throws IOException
+	{
+		FileSystem tempFS = FileSystem.newInstance(new Path(filePath).toUri(), new Configuration());
 
-	    if (tempFS instanceof LocalFileSystem) {
-	      tempFS = ((LocalFileSystem)tempFS).getRaw();
-	    }
+		if (tempFS instanceof LocalFileSystem) {
+			tempFS = ((LocalFileSystem)tempFS).getRaw();
+		}
 
-	    return tempFS;
-	  }
-	
+		return tempFS;
+	}
+
 	@Override
 	public void setup(Context.OperatorContext context)
 	{
@@ -166,21 +177,48 @@ public class PartitionedFileOutput extends BaseOperator implements Partitioner<P
 		long appWindowId = context.getValue(OperatorContext.ACTIVATION_WINDOW_ID);
 		id = context.getId();
 		LOG.debug("Started setup, appWindowId = {}, operator id = {}", appWindowId, id);
-		
-	    //Getting required file system instance.
-	    try {
-	      fs = getFSInstance();
-	    } catch (IOException ex) {
-	      throw new RuntimeException(ex);
-	    }
 
-	    if (replication <= 0) {
-	      replication = fs.getDefaultReplication(new Path(filePath));
-	    }
 
-	    LOG.debug("FS class {}", fs.getClass());
+		//Getting required file system instance.
+		try {
+			fs = getFSInstance();
+			if (replication <= 0) {
+				replication = fs.getDefaultReplication(new Path(filePath));
+			}
+			fsOutput = openStream(new Path(filePath+"/"+id));
+		} catch (IOException ex) {
+			throw new RuntimeException(ex);
+		}
+
+		LOG.debug("FS class {}", fs.getClass());
+
 	}
 
+	@Override
+	public void teardown()
+	{
+		try {
+			fsOutput.close();
+		} catch (IOException e) {
+			throw new RuntimeException(e);
+		}
+	}
+
+	/**
+	 * Opens the stream for the specified file path in either append mode or create mode.
+	 *
+	 * @param filepath this is the path of either the actual file or the corresponding temporary file.
+	 * @param append   true for opening the file in append mode; false otherwise.
+	 * @return output stream.
+	 * @throws IOException
+	 */
+	protected FSDataOutputStream openStream(Path filepath) throws IOException
+	{
+		FSDataOutputStream fsOutput;
+		fsOutput = fs.create(filepath, (short)replication);
+		fs.setPermission(filepath, FsPermission.createImmutable(filePermission));
+		return fsOutput;
+	}
 
 	@Override
 	public void beginWindow(long windowId)
@@ -194,6 +232,11 @@ public class PartitionedFileOutput extends BaseOperator implements Partitioner<P
 	public void endWindow()
 	{
 		LOG.debug("window id = {}, operator id = {}, cnt = {}", curWindowId, id, cnt);
+		try {
+			fsOutput.hsync();
+		} catch (IOException e) {
+			LOG.error("endWindow", e);
+		}
 	}
 
 	// accessors
